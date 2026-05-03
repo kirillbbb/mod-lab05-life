@@ -1,131 +1,247 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Threading;
+using System.Text.Json;
+using System.IO;
 
 namespace cli_life
 {
+    public class Config
+    {
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public int CellSize { get; set; }
+        public double LiveDensity { get; set; }
+    }
+
     public class Cell
     {
         public bool IsAlive;
         public readonly List<Cell> neighbors = new List<Cell>();
         private bool IsAliveNext;
+
         public void DetermineNextLiveState()
         {
-            int liveNeighbors = neighbors.Where(x => x.IsAlive).Count();
+            int liveNeighbors = neighbors.Count(x => x.IsAlive);
+
             if (IsAlive)
                 IsAliveNext = liveNeighbors == 2 || liveNeighbors == 3;
             else
                 IsAliveNext = liveNeighbors == 3;
         }
+
         public void Advance()
         {
             IsAlive = IsAliveNext;
         }
     }
+
     public class Board
     {
         public readonly Cell[,] Cells;
         public readonly int CellSize;
 
-        public int Columns { get { return Cells.GetLength(0); } }
-        public int Rows { get { return Cells.GetLength(1); } }
-        public int Width { get { return Columns * CellSize; } }
-        public int Height { get { return Rows * CellSize; } }
+        public int Columns => Cells.GetLength(0);
+        public int Rows => Cells.GetLength(1);
 
-        public Board(int width, int height, int cellSize, double liveDensity = .1)
+        private readonly Random rand = new Random();
+
+        public Board(int width, int height, int cellSize)
         {
             CellSize = cellSize;
+            Cells = new Cell[width, height];
 
-            Cells = new Cell[width / cellSize, height / cellSize];
             for (int x = 0; x < Columns; x++)
                 for (int y = 0; y < Rows; y++)
                     Cells[x, y] = new Cell();
 
             ConnectNeighbors();
-            Randomize(liveDensity);
         }
 
-        readonly Random rand = new Random();
-        public void Randomize(double liveDensity)
+        public void Randomize(double density)
         {
-            foreach (var cell in Cells)
-                cell.IsAlive = rand.NextDouble() < liveDensity;
+            foreach (var c in Cells)
+                c.IsAlive = rand.NextDouble() < density;
         }
 
         public void Advance()
         {
-            foreach (var cell in Cells)
-                cell.DetermineNextLiveState();
-            foreach (var cell in Cells)
-                cell.Advance();
+            foreach (var c in Cells)
+                c.DetermineNextLiveState();
+
+            foreach (var c in Cells)
+                c.Advance();
         }
+
         private void ConnectNeighbors()
         {
             for (int x = 0; x < Columns; x++)
             {
                 for (int y = 0; y < Rows; y++)
                 {
-                    int xL = (x > 0) ? x - 1 : Columns - 1;
-                    int xR = (x < Columns - 1) ? x + 1 : 0;
+                    for (int dx = -1; dx <= 1; dx++)
+                    {
+                        for (int dy = -1; dy <= 1; dy++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
 
-                    int yT = (y > 0) ? y - 1 : Rows - 1;
-                    int yB = (y < Rows - 1) ? y + 1 : 0;
+                            int nx = (x + dx + Columns) % Columns;
+                            int ny = (y + dy + Rows) % Rows;
 
-                    Cells[x, y].neighbors.Add(Cells[xL, yT]);
-                    Cells[x, y].neighbors.Add(Cells[x, yT]);
-                    Cells[x, y].neighbors.Add(Cells[xR, yT]);
-                    Cells[x, y].neighbors.Add(Cells[xL, y]);
-                    Cells[x, y].neighbors.Add(Cells[xR, y]);
-                    Cells[x, y].neighbors.Add(Cells[xL, yB]);
-                    Cells[x, y].neighbors.Add(Cells[x, yB]);
-                    Cells[x, y].neighbors.Add(Cells[xR, yB]);
+                            Cells[x, y].neighbors.Add(Cells[nx, ny]);
+                        }
+                    }
                 }
             }
+        }
+
+        public int CountAlive()
+        {
+            return Cells.Cast<Cell>().Count(c => c.IsAlive);
+        }
+
+        public void Save(string path)
+        {
+            using var writer = new StreamWriter(path);
+
+            for (int y = 0; y < Rows; y++)
+            {
+                for (int x = 0; x < Columns; x++)
+                    writer.Write(Cells[x, y].IsAlive ? '1' : '0');
+
+                writer.WriteLine();
+            }
+        }
+
+        public void Load(string path)
+        {
+            var lines = File.ReadAllLines(path);
+
+            for (int y = 0; y < Rows; y++)
+                for (int x = 0; x < Columns; x++)
+                    Cells[x, y].IsAlive = lines[y][x] == '1';
+        }
+
+        // DFS для поиска компонент
+        public int CountClusters()
+        {
+            bool[,] visited = new bool[Columns, Rows];
+            int clusters = 0;
+
+            for (int x = 0; x < Columns; x++)
+            {
+                for (int y = 0; y < Rows; y++)
+                {
+                    if (Cells[x, y].IsAlive && !visited[x, y])
+                    {
+                        DFS(x, y, visited);
+                        clusters++;
+                    }
+                }
+            }
+
+            return clusters;
+        }
+
+        private void DFS(int x, int y, bool[,] visited)
+        {
+            if (x < 0 || y < 0 || x >= Columns || y >= Rows) return;
+            if (visited[x, y] || !Cells[x, y].IsAlive) return;
+
+            visited[x, y] = true;
+
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dy = -1; dy <= 1; dy++)
+                    if (!(dx == 0 && dy == 0))
+                        DFS((x + dx + Columns) % Columns,
+                            (y + dy + Rows) % Rows,
+                            visited);
         }
     }
+
     class Program
     {
-        static Board board;
-        static private void Reset()
+        static Config LoadConfig(string path)
         {
-            board = new Board(
-                width: 50,
-                height: 20,
-                cellSize: 1,
-                liveDensity: 0.5);
+            return JsonSerializer.Deserialize<Config>(File.ReadAllText(path));
         }
-        static void Render()
+
+        static void Render(Board board)
         {
-            for (int row = 0; row < board.Rows; row++)
+            Console.Clear();
+
+            for (int y = 0; y < board.Rows; y++)
             {
-                for (int col = 0; col < board.Columns; col++)   
-                {
-                    var cell = board.Cells[col, row];
-                    if (cell.IsAlive)
-                    {
-                        Console.Write('*');
-                    }
-                    else
-                    {
-                        Console.Write(' ');
-                    }
-                }
-                Console.Write('\n');
+                for (int x = 0; x < board.Columns; x++)
+                    Console.Write(board.Cells[x, y].IsAlive ? '*' : ' ');
+
+                Console.WriteLine();
             }
         }
+
+        static int RunSimulation(Board board)
+        {
+            int prev = -1;
+            int stable = 0;
+            int steps = 0;
+
+            while (true)
+            {
+                board.Advance();
+                steps++;
+
+                int current = board.CountAlive();
+
+                if (current == prev)
+                    stable++;
+                else
+                    stable = 0;
+
+                if (stable >= 5)
+                    return steps;
+
+                prev = current;
+            }
+        }
+
         static void Main(string[] args)
         {
-            Reset();
-            while(true)
+            var config = LoadConfig("config.json");
+
+            var board = new Board(config.Width, config.Height, config.CellSize);
+            board.Randomize(config.LiveDensity);
+
+            // визуализация (можно убрать)
+            for (int i = 0; i < 50; i++)
             {
-                Console.Clear();
-                Render();
+                Render(board);
                 board.Advance();
-                Thread.Sleep(1000);
+                System.Threading.Thread.Sleep(200);
             }
+
+            // исследование
+            Directory.CreateDirectory("Data");
+
+            using var writer = new StreamWriter("Data/data.txt");
+
+            for (double d = 0.1; d <= 0.9; d += 0.1)
+            {
+                int total = 0;
+
+                for (int i = 0; i < 5; i++)
+                {
+                    var b = new Board(config.Width, config.Height, config.CellSize);
+                    b.Randomize(d);
+
+                    total += RunSimulation(b);
+                }
+
+                int avg = total / 5;
+                writer.WriteLine($"{d} {avg}");
+                Console.WriteLine($"Density {d}: {avg}");
+            }
+
+            Console.WriteLine("Done.");
         }
     }
 }
